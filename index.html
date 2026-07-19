@@ -28,7 +28,7 @@
   #board-wrap {
     position: fixed;
     top: 72px; left: 50%;
-    --s: 0.5;                       /* 전체 크기 배율 (1 = 원본, 0.75 = 25% 작게) */
+    --s: 0.75;                       /* 전체 크기 배율 (1 = 원본, 0.75 = 25% 작게) */
     transform: translateX(-50%) scale(var(--s));
     transform-origin: top center;
     display: flex; align-items: stretch;
@@ -207,23 +207,19 @@
   const $ = id => document.getElementById(id);
 
   /* ===== 동기화 채널 (이 채널명을 쓰는 창끼리만 값이 오감) ===== */
-  const BROKER = 'wss://broker.emqx.io:8084/mqtt';
-  const TOPIC  = 'scb/chs-save/starcraft-7yq2x/state';   // 고유 채널명
+  const BROKER    = 'wss://broker.emqx.io:8084/mqtt';
+  const TOPIC     = 'scb/chs-save/starcraft-7yq2x/state';   // 텍스트/점수
+  const TOPIC_IMG = 'scb/chs-save/starcraft-7yq2x/imgs';    // 이미지(별도 채널)
 
-  /* ===== 저장소에 같이 올려둔 이미지 자동 불러오기 =====
-     GitHub 저장소에 아래 이름으로 파일을 올리면 자동 표시(양쪽 창 동일).
-     파일이 없으면 이모지가 그대로 나옵니다. 이름은 바꿔도 됩니다. */
-  const IMG = { mascot:'mascot.png', logoL:'logoL.png', logoR:'logoR.png' };
-  function tryLoadImg(file, elId){
-    if(!file) return;
-    const im = new Image();
-    im.onload  = ()=>{ const el=$(elId); el.style.backgroundImage=`url(${file})`; el.textContent=''; };
-    im.onerror = ()=>{};   // 파일 없으면 이모지 유지
-    im.src = file;
+  /* 이미지 상태 (조작 창에서 올리면 채널로 전송 → 프릭샷에 표시) */
+  let imgs = { mascot:null, logoL:null, logoR:null };
+  function applyImg(key){
+    const el = $(key); if(!el) return;
+    if(imgs[key]){ el.style.backgroundImage = `url(${imgs[key]})`; el.textContent = ''; }
   }
-  Object.keys(IMG).forEach(k => tryLoadImg(IMG[k], k));
+  function applyImgs(){ ['mascot','logoL','logoR'].forEach(applyImg); }
 
-  /* 현재 상태 (텍스트/점수만 실시간 동기화) */
+  /* 현재 상태 (텍스트/점수 실시간 동기화) */
   let state = { title:'오늘의 대결', nameL:'비송 1T', nameR:'단슬 7P', sL:1, sR:2 };
   let applying = false;   // 원격 수신 반영 중엔 재전송 막기
 
@@ -247,15 +243,20 @@
   function setStat(t){ $('syncstat').textContent = t; }
   try {
     client = mqtt.connect(BROKER, { connectTimeout: 8000, reconnectPeriod: 3000 });
-    client.on('connect', ()=>{ ready = true; setStat('연결됨 ✅'); client.subscribe(TOPIC); });
+    client.on('connect', ()=>{ ready = true; setStat('연결됨 ✅'); client.subscribe(TOPIC); client.subscribe(TOPIC_IMG); });
     client.on('reconnect', ()=> setStat('재연결 중…'));
     client.on('error', ()=> setStat('연결 오류'));
     client.on('close', ()=>{ ready=false; setStat('끊김'); });
     client.on('message', (t, msg)=>{
       try {
-        const s = JSON.parse(msg.toString());
-        state = Object.assign(state, s);
-        applying = true; render(); applying = false;
+        const data = JSON.parse(msg.toString());
+        if(t === TOPIC_IMG){
+          imgs = Object.assign(imgs, data);
+          applyImgs();
+        } else {
+          state = Object.assign(state, data);
+          applying = true; render(); applying = false;
+        }
       } catch(e){}
     });
   } catch(e){ setStat('미지원'); }
@@ -263,6 +264,11 @@
   function publish(){
     if(client && ready){
       client.publish(TOPIC, JSON.stringify(state), { retain:true });
+    }
+  }
+  function publishImg(){
+    if(client && ready){
+      client.publish(TOPIC_IMG, JSON.stringify(imgs), { retain:true });
     }
   }
 
@@ -289,13 +295,31 @@
   });
   $('btnReset').addEventListener('click', ()=>{ state.sL=0; state.sR=0; render(); publish(); });
 
-  /* 로고/마스코트 이미지 (로컬 전용, 동기화 안 함) */
-  function hookFile(inputId, logoId){
+  /* 로고/마스코트 이미지 — 작게 압축해서 채널로 전송(실시간 동기화) */
+  function compress(file, cb){
+    const r = new FileReader();
+    r.onload = ev=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const MAX = 220;                        // 최대 한 변 220px로 축소(용량 절약)
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+        const w = Math.round(img.width*scale), h = Math.round(img.height*scale);
+        const cv = document.createElement('canvas'); cv.width=w; cv.height=h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        cb(cv.toDataURL('image/png'));          // 투명 유지 위해 PNG
+      };
+      img.src = ev.target.result;
+    };
+    r.readAsDataURL(file);
+  }
+  function hookFile(inputId, key){
     $(inputId).addEventListener('change', e=>{
       const f = e.target.files[0]; if(!f) return;
-      const r = new FileReader();
-      r.onload = ev=>{ const el=$(logoId); el.style.backgroundImage=`url(${ev.target.result})`; el.textContent=''; };
-      r.readAsDataURL(f);
+      compress(f, durl=>{
+        imgs[key] = durl;
+        applyImg(key);      // 내 화면에 즉시 반영
+        publishImg();       // 다른 창(프릭샷)에도 전송
+      });
     });
   }
   hookFile('fileL','logoL'); hookFile('fileR','logoR'); hookFile('fileM','mascot');
