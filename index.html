@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <title>귀여운 대결 전광판 (실시간)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -201,6 +203,9 @@
       <button id="btnPreview">배경 체크무늬 켜기</button>
       <button id="btnReset">0:0 리셋</button>
     </div>
+    <div class="foot">
+      <button id="btnRefresh" style="background:#3a4a6a">🔄 방송화면 최신버전으로 새로고침</button>
+    </div>
   </div>
 
 <script>
@@ -210,6 +215,8 @@
   const BROKER    = 'wss://broker.emqx.io:8084/mqtt';
   const TOPIC     = 'scb/chs-save/starcraft-7yq2x/state';   // 텍스트/점수
   const TOPIC_IMG = 'scb/chs-save/starcraft-7yq2x/imgs';    // 이미지(별도 채널)
+  const TOPIC_CMD = 'scb/chs-save/starcraft-7yq2x/cmd';     // 명령(새로고침 등)
+  const MYID = 'w' + Math.random().toString(36).slice(2);   // 이 창의 고유 id
 
   /* 이미지 상태 (조작 창에서 올리면 채널로 전송 → 프릭샷에 표시) */
   let imgs = { mascot:null, logoL:null, logoR:null };
@@ -243,13 +250,20 @@
   function setStat(t){ $('syncstat').textContent = t; }
   try {
     client = mqtt.connect(BROKER, { connectTimeout: 8000, reconnectPeriod: 3000 });
-    client.on('connect', ()=>{ ready = true; setStat('연결됨 ✅'); client.subscribe(TOPIC); client.subscribe(TOPIC_IMG); });
+    client.on('connect', ()=>{ ready = true; setStat('연결됨 ✅'); client.subscribe(TOPIC); client.subscribe(TOPIC_IMG); client.subscribe(TOPIC_CMD); });
     client.on('reconnect', ()=> setStat('재연결 중…'));
     client.on('error', ()=> setStat('연결 오류'));
     client.on('close', ()=>{ ready=false; setStat('끊김'); });
     client.on('message', (t, msg)=>{
       try {
         const data = JSON.parse(msg.toString());
+        if(t === TOPIC_CMD){
+          // 다른 창이 보낸 새로고침 명령 → 캐시 우회해서 최신 버전 로드
+          if(data.cmd === 'reload' && data.id !== MYID){
+            location.replace(location.pathname + '?v=' + data.t);
+          }
+          return;
+        }
         if(t === TOPIC_IMG){
           imgs = Object.assign(imgs, data);
           applyImgs();
@@ -302,6 +316,19 @@
     });
   });
   $('btnReset').addEventListener('click', ()=>{ state.sL=0; state.sR=0; render(); publish(); });
+
+  /* 방송화면(프릭샷) 최신버전으로 새로고침 명령 보내기 */
+  $('btnRefresh').addEventListener('click', ()=>{
+    if(client && ready){
+      const stamp = Date.now();
+      client.publish(TOPIC_CMD, JSON.stringify({ cmd:'reload', id:MYID, t:stamp }));
+      $('btnRefresh').textContent = '🔄 명령 전송됨! (프릭샷 갱신 중)';
+      setTimeout(()=>{ $('btnRefresh').textContent = '🔄 방송화면 최신버전으로 새로고침'; }, 3000);
+    } else {
+      $('btnRefresh').textContent = '⚠️ 연결 안 됨';
+      setTimeout(()=>{ $('btnRefresh').textContent = '🔄 방송화면 최신버전으로 새로고침'; }, 2000);
+    }
+  });
 
   /* 로고/마스코트 이미지 — 작게 압축해서 채널로 전송(실시간 동기화) */
   function compress(file, cb){
