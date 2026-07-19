@@ -27,15 +27,17 @@
 
   #board-wrap {
     position: fixed;
-    top: 96px; left: 50%;
-    transform: translateX(-50%);
+    top: 72px; left: 50%;
+    --s: 0.75;                       /* 전체 크기 배율 (1 = 원본, 0.75 = 25% 작게) */
+    transform: translateX(-50%) scale(var(--s));
+    transform-origin: top center;
     display: flex; align-items: stretch;
     filter: drop-shadow(0 10px 22px rgba(0,0,0,.45));
     animation: floaty 4s ease-in-out infinite;
   }
   @keyframes floaty {
-    0%,100% { transform: translateX(-50%) translateY(0); }
-    50%     { transform: translateX(-50%) translateY(-5px); }
+    0%,100% { transform: translateX(-50%) scale(var(--s)) translateY(0); }
+    50%     { transform: translateX(-50%) scale(var(--s)) translateY(-5px); }
   }
 
   .team {
@@ -208,7 +210,20 @@
   const BROKER = 'wss://broker.emqx.io:8084/mqtt';
   const TOPIC  = 'scb/chs-save/starcraft-7yq2x/state';   // 고유 채널명
 
-  /* 현재 상태 (텍스트/점수만 동기화. 이미지는 각 창에서 개별 설정) */
+  /* ===== 저장소에 같이 올려둔 이미지 자동 불러오기 =====
+     GitHub 저장소에 아래 이름으로 파일을 올리면 자동 표시(양쪽 창 동일).
+     파일이 없으면 이모지가 그대로 나옵니다. 이름은 바꿔도 됩니다. */
+  const IMG = { mascot:'mascot.png', logoL:'logoL.png', logoR:'logoR.png' };
+  function tryLoadImg(file, elId){
+    if(!file) return;
+    const im = new Image();
+    im.onload  = ()=>{ const el=$(elId); el.style.backgroundImage=`url(${file})`; el.textContent=''; };
+    im.onerror = ()=>{};   // 파일 없으면 이모지 유지
+    im.src = file;
+  }
+  Object.keys(IMG).forEach(k => tryLoadImg(IMG[k], k));
+
+  /* 현재 상태 (텍스트/점수만 실시간 동기화) */
   let state = { title:'오늘의 대결', nameL:'비송 1T', nameR:'단슬 7P', sL:1, sR:2 };
   let applying = false;   // 원격 수신 반영 중엔 재전송 막기
 
