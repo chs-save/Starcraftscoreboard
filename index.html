@@ -27,8 +27,8 @@
 
   #board-wrap {
     position: fixed;
-    top: 72px; left: 50%;
-    --s: 0.75;                       /* 전체 크기 배율 (1 = 원본, 0.75 = 25% 작게) */
+    top: 96px; left: 50%;
+    --s: 1.0;                        /* 전체 크기 배율 (1 = 원본, 0.75 = 25% 작게, 0.5 = 절반) */
     transform: translateX(-50%) scale(var(--s));
     transform-origin: top center;
     display: flex; align-items: stretch;
@@ -100,10 +100,10 @@
 
   /* 제목 리본 — .center(점수판) 기준 정렬 → 팀 이름 길이와 무관하게 항상 정중앙 */
   .ribbon {
-    position:absolute; bottom:-30px; left:50%; transform:translateX(-50%);
-    background:#ffd23f; color:#7a4a00; font-size:15px;
-    padding:3px 16px 4px; border-radius:14px;
-    box-shadow:0 3px 8px rgba(0,0,0,.3); white-space:nowrap; z-index:4;
+    position:absolute; bottom:-42px; left:50%; transform:translateX(-50%);
+    background:#ffd23f; color:#7a4a00; font-size:23px;
+    padding:6px 26px 8px; border-radius:20px;
+    box-shadow:0 4px 10px rgba(0,0,0,.32); white-space:nowrap; z-index:4;
   }
   .ribbon::before{ content:"⭐ "; } .ribbon::after { content:" ⭐"; }
 
@@ -172,7 +172,7 @@
 
   <div id="panel">
     <h3>🎛️ 전광판 조작</h3>
-    <p id="syncline">동기화: <b id="syncstat">연결 중…</b></p>
+    <p id="syncline">동기화: <b id="syncstat">연결 중…</b> · 이미지: <span id="imgstat" style="color:#ffd27c">-</span></p>
 
     <div class="row"><label>제목</label><input type="text" id="inRibbon" value="오늘의 대결"></div>
     <div class="row"><label>마스코트</label><input type="file" id="fileM" accept="image/*"></div>
@@ -253,6 +253,7 @@
         if(t === TOPIC_IMG){
           imgs = Object.assign(imgs, data);
           applyImgs();
+          setImgStat('수신됨 ✅');
         } else {
           state = Object.assign(state, data);
           applying = true; render(); applying = false;
@@ -266,10 +267,17 @@
       client.publish(TOPIC, JSON.stringify(state), { retain:true });
     }
   }
+  function setImgStat(t){ const el=$('imgstat'); if(el) el.textContent=t; }
   function publishImg(){
-    if(client && ready){
-      client.publish(TOPIC_IMG, JSON.stringify(imgs), { retain:true });
-    }
+    if(!(client && ready)){ setImgStat('오프라인'); return; }
+    const payload = JSON.stringify(imgs);
+    const kb = Math.round(payload.length/1024);
+    setImgStat('전송 중… '+kb+'KB');
+    try {
+      client.publish(TOPIC_IMG, payload, { retain:true, qos:0 }, (err)=>{
+        setImgStat(err ? ('전송실패: '+err.message) : ('전송됨 ✅ '+kb+'KB'));
+      });
+    } catch(e){ setImgStat('전송오류'); }
   }
 
   /* ===== 조작 → 상태 변경 + 전송 ===== */
@@ -301,12 +309,20 @@
     r.onload = ev=>{
       const img = new Image();
       img.onload = ()=>{
-        const MAX = 220;                        // 최대 한 변 220px로 축소(용량 절약)
+        const MAX = 150;                        // 한 변 150px로 축소(용량 대폭 절약)
         const scale = Math.min(1, MAX / Math.max(img.width, img.height));
         const w = Math.round(img.width*scale), h = Math.round(img.height*scale);
         const cv = document.createElement('canvas'); cv.width=w; cv.height=h;
         cv.getContext('2d').drawImage(img, 0, 0, w, h);
-        cb(cv.toDataURL('image/png'));          // 투명 유지 위해 PNG
+        let out = cv.toDataURL('image/png');    // 우선 PNG(투명 유지)
+        if(out.length > 90*1024){               // 그래도 크면 JPEG로 더 줄임
+          const cv2 = document.createElement('canvas'); cv2.width=w; cv2.height=h;
+          const c2 = cv2.getContext('2d');
+          c2.fillStyle = '#ffffff'; c2.fillRect(0,0,w,h);   // 투명 대신 흰 배경
+          c2.drawImage(img, 0, 0, w, h);
+          out = cv2.toDataURL('image/jpeg', 0.82);
+        }
+        cb(out);
       };
       img.src = ev.target.result;
     };
@@ -315,11 +331,15 @@
   function hookFile(inputId, key){
     $(inputId).addEventListener('change', e=>{
       const f = e.target.files[0]; if(!f) return;
-      compress(f, durl=>{
-        imgs[key] = durl;
-        applyImg(key);      // 내 화면에 즉시 반영
-        publishImg();       // 다른 창(프릭샷)에도 전송
-      });
+      const done = durl => { imgs[key] = durl; applyImg(key); publishImg(); };
+      if(f.type === 'image/gif'){
+        // GIF은 압축(canvas)하면 첫 프레임만 남아 멈춤 → 원본 그대로 전송해 애니메이션 유지
+        const r = new FileReader();
+        r.onload = ev => done(ev.target.result);
+        r.readAsDataURL(f);
+      } else {
+        compress(f, done);
+      }
     });
   }
   hookFile('fileL','logoL'); hookFile('fileR','logoR'); hookFile('fileM','mascot');
